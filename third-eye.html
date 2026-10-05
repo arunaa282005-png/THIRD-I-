@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Third Eye – change monitoring prototype</title>
+<style>
+:root{--bg:#eef3f6;--card:#fff;--ink:#14304c;--mut:#5b6e80;--acc:#2a7fb5;--ok:#2a9468;--warn:#c9781f;--bad:#c23b2e;--line:#d3dee7;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0e1a26;--card:#162638;--ink:#e5eef6;--mut:#9db1c3;--line:#2a3d52;--acc:#5aaee0}}
+:root[data-theme=dark]{--bg:#0e1a26;--card:#162638;--ink:#e5eef6;--mut:#9db1c3;--line:#2a3d52;--acc:#5aaee0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Georgia,'Times New Roman',serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:30px;margin:8px 0 0;letter-spacing:.2px}
+h2{font-size:18px;margin:0 0 8px}
+.sub{color:var(--mut);margin:2px 0 12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
+.note{border-left:4px solid var(--acc);padding:8px 12px;background:var(--card);margin:10px 0;font-size:14px}
+button,.btn{font:inherit;background:var(--acc);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer}
+button.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.on{background:var(--ink);color:var(--bg)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--warn);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+label{font-size:13px;color:var(--mut);display:flex;flex-direction:column;gap:2px}
+input[type=number],input[type=date]{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px}
+input[type=number]{width:70px}
+canvas#roi{width:100%;max-width:360px;touch-action:none;border-radius:8px;border:1px solid var(--line);cursor:crosshair}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:520px}
+td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+td img{width:40px;height:40px;object-fit:cover;border-radius:6px;display:block}
+.pill{border-radius:99px;padding:1px 8px;font-size:12px;color:#fff}
+.alert{border-radius:10px;padding:14px;color:#fff}
+.a-bad{background:var(--bad)}.a-warn{background:var(--warn)}.a-ok{background:var(--ok)}
+.cmp{display:flex;gap:10px;flex-wrap:wrap}.cmp figure{margin:0;text-align:center;font-size:12px;color:var(--mut)}
+.cmp img{width:130px;height:130px;object-fit:cover;border-radius:8px;display:block}
+svg{width:100%;height:auto;display:block}
+.small{font-size:12px;color:var(--mut)}
+</style></head><body><main>
+<h1>Third Eye</h1>
+<p class="sub">Helping you notice what you may not notice.</p>
+<div class="note"><b>Change detection, not diagnosis.</b> Photos are processed in this browser only; nothing is uploaded.</div>
+
+<section class="card">
+<h2>1. Add your photos</h2>
+<div class="row">
+<label class="btn" style="color:#fff;flex-direction:row;cursor:pointer">Choose photos<input id="f" type="file" accept="image/*" multiple hidden></label>
+<button class="sec" id="demo">Load demo timeline</button>
+<button class="sec" id="clr">Clear</button>
+</div>
+<p class="small">Use photos of the same person, oldest to newest. Dates default to the file date; edit them in the table.</p>
+</section>
+
+<section class="card" id="roiCard" hidden>
+<h2>2. Mark the region to watch</h2>
+<p class="small">Drag on the photo over the eye, cheek or neck area. The same box is used on every photo.</p>
+<canvas id="roi" width="360" height="360"></canvas>
+</section>
+
+<section class="card" id="setCard" hidden>
+<h2>3. Settings</h2>
+<div class="row">
+<label>Baseline photos<input id="k" type="number" min="1" max="10" value="3"></label>
+<label>Sensitivity (z)<input id="thr" type="number" min="1" max="5" step=".5" value="2.5"></label>
+<label>Persistence (photos)<input id="p" type="number" min="1" max="6" value="2"></label>
+</div>
+</section>
+
+<section id="out" hidden>
+<div class="card"><h2>Health awareness alert</h2><div id="alert"></div></div>
+<div class="card"><h2>Timeline</h2>
+<div class="row" id="tabs" style="margin-bottom:8px"></div>
+<div id="chart"></div>
+<p class="small">Shaded band = your normal range from the baseline. Hollow dots = rejected by quality check.</p></div>
+<div class="card"><h2>Previous vs current</h2><div class="cmp" id="cmp"></div></div>
+<div class="card"><h2>Photo log</h2><div class="tbl" id="log"></div></div>
+</section>
+<p class="small">Prototype: tracks colour, redness and texture in your chosen region. Face/neck geometry and swallow motion need landmark models (MediaPipe) and are the next step. Not a medical device.</p>
+
+<script>
+const $=s=>document.querySelector(s);
+const MET={yellow:'Yellow tint',red:'Redness',tex:'Texture'},FLOOR={yellow:.02,red:.02,tex:.03};
+let items=[],roi={x:.3,y:.3,w:.4,h:.4},metric='yellow',st=null;
+const avg=a=>a.reduce((s,x)=>s+x,0)/a.length;
+
+function toCanvas(im){const s=Math.min(1,480/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*s|0;c.height=im.height*s|0;c.getContext('2d').drawImage(im,0,0,c.width,c.height);return c}
+function thumb(c){const t=document.createElement('canvas');t.width=t.height=120;t.getContext('2d').drawImage(c,0,0,120,120*c.height/c.width*(c.width/c.height)>0?120:120);return t.toDataURL('image/jpeg',.7)}
+function add(c,name,date){items.push({c,name,date,th:thumb(c)});}
+$('#f').onchange=e=>{const fs=[...e.target.files];let n=0;fs.forEach(f=>{const im=new Image();im.onload=()=>{add(toCanvas(im),f.name,new Date(f.lastModified).toISOString().slice(0,10));if(++n===fs.length)run()};im.src=URL.createObjectURL(f)})};
+$('#clr').onclick=()=>{items=[];run()};
+$('#demo').onclick=()=>{items=[];const tints=[0,0,0,0,.3,.55,.8],today=new Date();
+tints.forEach((t,i)=>{const d=new Date(today-(6-i)*7*864e5);add(face(t,i),'demo-'+(i+1),d.toISOString().slice(0,10))});
+roi={x:.3,y:.3,w:.4,h:.4};run()};
+['k','thr','p'].forEach(i=>$('#'+i).onchange=run);
+
+function face(t,i){const c=document.createElement('canvas');c.width=c.height=240;const x=c.getContext('2d');
+const L=[1,.88,1.1,.95,1.05,.9,1][i%7],k=v=>Math.max(0,Math.min(255,v*L)|0);
+x.fillStyle='rgb('+k(205)+','+k(215)+','+k(222)+')';x.fillRect(0,0,240,240);
+x.fillStyle='rgb('+k(224)+','+k(172+t*50)+','+k(140-t*80)+')';x.beginPath();x.ellipse(120,125,72,92,0,0,7);x.fill();
+x.fillStyle='rgb('+k(250)+','+k(250-t*40)+','+k(245-t*120)+')';
+[85,155].forEach(ex=>{x.beginPath();x.ellipse(ex,105,17,9,0,0,7);x.fill()});
+x.fillStyle='#3a2a22';[85,155].forEach(ex=>{x.beginPath();x.arc(ex,105,6,0,7);x.fill()});
+x.fillStyle='rgb('+k(170)+','+k(95)+','+k(95)+')';x.fillRect(100,168,40,7);
+const id=x.getImageData(0,0,240,240),d=id.data;
+for(let j=0;j<d.length;j+=4){const n=(Math.random()-.5)*16;d[j]+=n;d[j+1]+=n;d[j+2]+=n}
+x.putImageData(id,0,0);return c}
+
+function feat(c){const t=document.createElement('canvas');t.width=t.height=64;const x=t.getContext('2d',{willReadFrequently:true});
+x.drawImage(c,roi.x*c.width,roi.y*c.height,roi.w*c.width,roi.h*c.height,0,0,64,64);
+const d=x.getImageData(0,0,64,64).data,g=new Float32Array(4096);let R=0,G=0,B=0;
+for(let i=0;i<4096;i++){const r=d[4*i],gg=d[4*i+1],b=d[4*i+2];R+=r;G+=gg;B+=b;g[i]=.299*r+.587*gg+.114*b}
+R/=4096;G/=4096;B/=4096;const s=R+G+B||1,mg=avg([...g]);
+let l=0,l2=0,n=0;for(let y=1;y<63;y++)for(let xx=1;xx<63;xx++){const i=y*64+xx,v=4*g[i]-g[i-1]-g[i+1]-g[i-64]-g[i+64];l+=v;l2+=v*v;n++}
+const sd=Math.sqrt(avg([...g].map(v=>(v-mg)**2)));
+return{br:s/3,sharp:l2/n-(l/n)**2,yellow:(R+G-2*B)/s,red:(R-G)/s,tex:sd/(mg||1)}}
+
+function run(){
+$('#roiCard').hidden=$('#setCard').hidden=$('#out').hidden=!items.length;
+if(!items.length)return;
+items.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+drawRoi();
+const k=+$('#k').value,thr=+$('#thr').value,p=+$('#p').value;
+items.forEach(i=>{i.f=feat(i.c);i.z={};i.fl={};i.ok=i.f.br>35&&i.f.br<225&&i.f.sharp>8;i.why=i.f.br<=35?'Too dark':i.f.br>=225?'Too bright':i.f.sharp<=8?'Blurry':''});
+const good=items.filter(i=>i.ok),base=good.slice(0,k),rest=good.slice(k);
+st=null;let per=[],tmp=[];
+if(base.length>=k&&rest.length){st={};
+for(const m in MET){const v=base.map(i=>i.f[m]),mu=avg(v),sd=Math.max(Math.sqrt(avg(v.map(a=>(a-mu)**2))),FLOOR[m]);st[m]={mu,sd};
+good.forEach(i=>i.z[m]=(i.f[m]-mu)/sd);rest.forEach(i=>i.fl[m]=Math.abs(i.z[m])>thr);
+const last=rest.slice(-p);
+if(last.length>=p&&last.every(i=>i.fl[m]&&Math.sign(i.z[m])===Math.sign(last[0].z[m])))per.push({m,up:last[0].z[m]>0,since:last[0].date,n:p});
+else if(rest.some(i=>i.fl[m]))tmp.push(m)}}
+base.forEach(i=>i.base=1);
+alertBox(base.length>=k&&rest.length,per,tmp,k);tabs();chart(good);compare(base,good);log();}
+
+function alertBox(ready,per,tmp,k){const a=$('#alert');
+if(!ready)a.innerHTML='<div class="alert a-warn">Need at least '+k+' usable baseline photos plus 1 newer photo to compare.</div>';
+else if(per.length)a.innerHTML='<div class="alert a-bad"><b>Persistent change detected</b><br>'+per.map(r=>MET[r.m]+' '+(r.up?'higher':'lower')+' than your usual, in the last '+r.n+' photos (since '+r.since+')').join('<br>')+'<br><br>Consider consulting a healthcare professional. This is change detection, not diagnosis. You decide what to do next.</div>';
+else if(tmp.length)a.innerHTML='<div class="alert a-warn"><b>Temporary change noticed</b><br>'+tmp.map(m=>MET[m]).join(', ')+' moved outside your range once but is not persistent. Keep adding photos.</div>';
+else a.innerHTML='<div class="alert a-ok"><b>No persistent change</b><br>Your latest photos are within your personal baseline.</div>'}
+
+function tabs(){$('#tabs').innerHTML=Object.keys(MET).map(m=>'<button class="sec'+(m===metric?' on':'')+'" data-m="'+m+'">'+MET[m]+'</button>').join('');
+$('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{metric=b.dataset.m;run()})}
+
+function chart(good){const W=360,H=170,P=28,m=metric;
+const vals=items.map(i=>i.f[m]);let lo=Math.min(...vals),hi=Math.max(...vals);
+if(st){lo=Math.min(lo,st[m].mu-2.5*st[m].sd);hi=Math.max(hi,st[m].mu+2.5*st[m].sd)}
+if(hi-lo<1e-4){hi+=.01;lo-=.01}const pad=(hi-lo)*.1;lo-=pad;hi+=pad;
+const X=i=>P+(items.length<2?.5:i/(items.length-1))*(W-2*P),Y=v=>H-P-(v-lo)/(hi-lo)*(H-2*P);
+const thr=+$('#thr').value;let s='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Timeline of '+MET[m]+'">';
+if(st)s+='<rect x="'+P+'" y="'+Y(st[m].mu+thr*st[m].sd)+'" width="'+(W-2*P)+'" height="'+(Y(st[m].mu-thr*st[m].sd)-Y(st[m].mu+thr*st[m].sd))+'" fill="var(--acc)" opacity=".18"/><line x1="'+P+'" x2="'+(W-P)+'" y1="'+Y(st[m].mu)+'" y2="'+Y(st[m].mu)+'" stroke="var(--acc)" stroke-dasharray="4 3"/>';
+const pts=items.filter(i=>i.ok).map(i=>X(items.indexOf(i))+','+Y(i.f[m])).join(' ');
+s+='<polyline points="'+pts+'" fill="none" stroke="var(--ink)" stroke-width="1.5"/>';
+items.forEach((i,j)=>{const col=!i.ok?'none':i.fl[m]?'var(--bad)':i.base?'var(--acc)':'var(--ink)';
+s+='<circle cx="'+X(j)+'" cy="'+Y(i.f[m])+'" r="5" fill="'+col+'" stroke="'+(i.ok?col:'var(--mut)')+'" stroke-width="1.5"/><text x="'+X(j)+'" y="'+(H-8)+'" font-size="9" text-anchor="middle" fill="var(--mut)">'+i.date.slice(5)+'</text>'});
+$('#chart').innerHTML=s+'</svg>'}
+
+function compare(base,good){const a=base[base.length-1],b=good[good.length-1];
+$('#cmp').innerHTML=a&&b&&a!==b?'<figure><img src="'+a.th+'" alt="Baseline photo"><br>Baseline ('+a.date+')</figure><figure><img src="'+b.th+'" alt="Latest photo"><br>Current ('+b.date+')</figure>':'<span class="small">Add more photos to compare.</span>'}
+
+function log(){const m=metric;$('#log').innerHTML='<table><tr><th></th><th>Date</th><th>Quality</th><th>'+MET[m]+' z</th><th>Status</th></tr>'+items.map((i,j)=>{
+const z=i.z[m],stt=!i.ok?['Rejected','var(--mut)']:i.base?['Baseline','var(--acc)']:i.fl[m]?['Changed','var(--bad)']:['Normal','var(--ok)'];
+return '<tr><td><img src="'+i.th+'" alt=""></td><td><input type="date" value="'+i.date+'" data-j="'+j+'" aria-label="Date"></td><td>'+(i.ok?'OK':i.why)+'</td><td>'+(z===undefined?'–':z.toFixed(1))+'</td><td><span class="pill" style="background:'+stt[1]+'">'+stt[0]+'</span></td></tr>'}).join('')+'</table>';
+$('#log').querySelectorAll('input').forEach(e=>e.onchange=()=>{items[+e.dataset.j].date=e.value||items[+e.dataset.j].date;run()})}
+
+const rc=$('#roi'),rx=rc.getContext('2d');let drag=null;
+function drawRoi(){const c=items[0].c,s=Math.min(360/c.width,360/c.height);rc.width=c.width*s;rc.height=c.height*s;rx.drawImage(c,0,0,rc.width,rc.height);
+rx.fillStyle='rgba(0,0,0,.35)';rx.fillRect(0,0,rc.width,rc.height);
+const X=roi.x*rc.width,Y=roi.y*rc.height,w=roi.w*rc.width,h=roi.h*rc.height;rx.drawImage(c,roi.x*c.width,roi.y*c.height,roi.w*c.width,roi.h*c.height,X,Y,w,h);
+rx.strokeStyle='#4fd1ff';rx.lineWidth=2;rx.strokeRect(X,Y,w,h)}
+function pos(e){const r=rc.getBoundingClientRect();return[Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))]}
+rc.onpointerdown=e=>{drag=pos(e);rc.setPointerCapture(e.pointerId)};
+rc.onpointermove=e=>{if(!drag)return;const p=pos(e);roi={x:Math.min(drag[0],p[0]),y:Math.min(drag[1],p[1]),w:Math.max(.05,Math.abs(p[0]-drag[0])),h:Math.max(.05,Math.abs(p[1]-drag[1]))};run()};
+rc.onpointerup=()=>{drag=null};
+</script></main></body></html>
